@@ -1,30 +1,65 @@
-# Module installieren (falls noch nicht vorhanden)
-Install-Module Microsoft.Graph -Scope CurrentUser -Force
-Install-Module ImportExcel -Scope CurrentUser -Force
+# Module laden
+
+#Install-Module Microsoft.Graph -Scope CurrentUser -Force
+#Install-Module ImportExcel -Scope CurrentUser -Force    
+#Import-Module Microsoft.Graph
+#Import-Module ImportExcel
 
 # Mit Graph verbinden
 Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
 
-# Alle Gerätekonfigurationen holen
-$policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
 
-$excelData = @()
 
-# Für jede Richtlinie die Einstellungen abrufen
-foreach ($policy in $policies.value) {
-    $settingsUri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$($policy.id)/settings"
-    $settings = Invoke-MgGraphRequest -Method GET -Uri $settingsUri
-
-    foreach ($setting in $settings.value) {
-        $excelData += [PSCustomObject]@{
-            PolicyName  = $policy.displayName
-            PolicyId    = $policy.id
-            SettingId   = $setting.id
-            Definition  = $setting.definitionId
-            Value       = $setting.valueJson
+function windows10CustomConfigurationSettings {
+    param (
+        $policy
+    )
+        # Einstellungen extrahieren 
+    $settings = @()
+        foreach ($setting in $policy) {
+            $settings += [PSCustomObject]@{
+                PolicyName = $policy.displayName
+                version = $policy.version
+                description = $policy.description
+                lastModifiedDateTime = $policy.lastModifiedDateTime
+                createdDateTime = $policy.createdDateTime
+                SettingName = $setting.omaSettings.displayName
+                SettingDescription = $setting.omaSettings.description
+                SettingType = ($setting.omaSettings.'@odata.type').Split('.')[2] # Extrahiere den ODataType
+                OMAUri = $setting.omaSettings.omaUri
+                value = $setting.omaSettings.value
+           }
         }
-    }
+    $settings
+        
 }
 
-# Export in Excel-Datei
-$excelData | Export-Excel -Path ".\IntuneDevicePolicies.xlsx" -AutoSize -WorksheetName "Policies"
+# Alle Gerätekonfigurationen abrufen
+$policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
+
+# Dictionary zur Gruppierung nach @odata.type
+$groupedPolicies = @{}
+
+
+# Richtlinien durchgehen
+foreach ($policyID in $policies.value.id) {
+    $policy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$policyID"
+
+    $odataType = ($policy.'@odata.type').Split('.')[2] # Extrahiere den ODataType
+    Write-Host "$($policy.displayName) $odataType"
+    Switch ($odataType) {
+        "windows10CustomConfiguration" {
+            $groupedPolicies[$odataType] += windows10CustomConfigurationSettings -policy $policy  
+        }
+    }   
+}
+
+# Export nach Excel mit Tabs pro ODataType
+$excelPath = "$env:USERPROFILE\Desktop\Intune-Policies.xlsx"
+foreach ($key in $groupedPolicies.Keys) {
+    $sheetName = ($key -replace '[^a-zA-Z0-9]', '_') -replace '^_', ''
+    $groupedPolicies[$key] | Export-Excel -Path $excelPath -WorksheetName $sheetName -AutoSize -Append
+}
+
+Write-Host "Export abgeschlossen: $excelPath"
+
