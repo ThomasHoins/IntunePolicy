@@ -12,7 +12,7 @@ Import-Module ImportExcel
 
 function windows10CustomConfigurationSettings {
     param (
-        $policy
+        $policy # Policy-Objekt, das die OMA-Einstellungen enthält
     )
     $settings = @()
     foreach ($setting in $policy.omaSettings) {
