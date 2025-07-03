@@ -1,3 +1,4 @@
+# Beschreibung: Dieses Skript exportiert alle Gerätekonfigurationen aus Intune in eine Excel-Datei.
 # Module laden
 
 #Install-Module Microsoft.Graph -Scope CurrentUser -Force
@@ -5,9 +6,9 @@
 #Import-Module Microsoft.Graph
 #Import-Module ImportExcel
 
-# Mit Graph verbinden
-Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
 
+
+# Funktionen definieren
 
 
 function windows10CustomConfigurationSettings {
@@ -33,6 +34,11 @@ function windows10CustomConfigurationSettings {
     $settings
         
 }
+
+#Main-Skript
+
+# Mit Graph verbinden
+Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
 
 # Alle Gerätekonfigurationen abrufen
 $policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
@@ -62,4 +68,5 @@ foreach ($key in $groupedPolicies.Keys) {
 }
 
 Write-Host "Export abgeschlossen: $excelPath"
+
 
