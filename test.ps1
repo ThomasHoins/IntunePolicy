@@ -1,9 +1,24 @@
-# Module laden
+
+# ============================
+# Modulinstallation & Import
+# ============================
+
+# Microsoft.Graph installieren (wenn nicht vorhanden)
+if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
+    Install-Module Microsoft.Graph -Scope CurrentUser -Force
+}
+Import-Module Microsoft.Graph
+
+# ImportExcel installieren (wenn nicht vorhanden)
+if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+    Install-Module ImportExcel -Scope CurrentUser -Force
+}
 Import-Module ImportExcel
+
 
 # Funktionen
 
-function Extract-FromCustomConfiguration {
+function Get-CustomConfigurationSettings {
     param ($policy)
     $settings = @()
     foreach ($setting in $policy.omaSettings) {
@@ -23,7 +38,7 @@ function Extract-FromCustomConfiguration {
     return $settings
 }
 
-function Extract-FromGenericConfiguration {
+function Get-GenericConfigurationSettings {
     param ($policy)
     $settings = @()
     $excludedProps = @(
@@ -76,10 +91,10 @@ foreach ($policyID in $policies.value.id) {
 
     switch ($odataType) {
         "windows10CustomConfiguration" {
-            $groupedPolicies[$odataType] += Extract-FromCustomConfiguration -policy $policy
+            $groupedPolicies[$odataType] += Get-CustomConfigurationSettings -policy $policy
         }
         default {
-            $groupedPolicies[$odataType] += Extract-FromGenericConfiguration -policy $policy
+            $groupedPolicies[$odataType] += Get-GenericConfigurationSettings -policy $policy
         }
     }
 }
@@ -87,7 +102,7 @@ foreach ($policyID in $policies.value.id) {
 # Export nach Excel
 $excelPath = "$env:USERPROFILE\Desktop\Intune-Policies.xlsx"
 foreach ($key in $groupedPolicies.Keys) {
-    $sheetName = ($key -replace '[^a-zA-Z0-9]', '_') -replace '^_', ''
+    $sheetName = $key  # Optional: Sheet-Namen bereinigen, falls nötig
     $groupedPolicies[$key] | Export-Excel -Path $excelPath -WorksheetName $sheetName -AutoSize -Append
 }
 
