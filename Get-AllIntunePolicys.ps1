@@ -1,3 +1,21 @@
+<#
+.SYNOPSIS
+    Exportiert alle Intune-Richtlinien (Konfigurationsprofile, Compliance-Richtlinien, Applikationsrichtlinien etc.) aus Microsoft Endpoint Manager (Intune) in JSON-Dateien.
+
+.BESCHREIBUNG
+    Dieses Skript verbindet sich mit dem Microsoft Graph API über das Microsoft.Graph PowerShell-Modul und exportiert alle relevanten Intune-Richtlinien in strukturierter Form.
+    Die exportierten Daten werden in einem lokalen Verzeichnis gespeichert und können zur Dokumentation oder für Backup-Zwecke verwendet werden.
+
+.AUTOR
+    Thomas Hoins
+
+.VORAUSSETZUNGEN
+    - Microsoft.Graph PowerShell-Modul
+    - Berechtigungen zum Zugriff auf Microsoft Intune über Microsoft Graph
+.VERSION
+    1.0
+
+#>
 
 # ============================
 # Modulinstallation & Import
