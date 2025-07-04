@@ -14,7 +14,7 @@ Dieses PowerShell-Skript exportiert alle relevanten Intune-Richtlinien aus Micro
 
 ## ⚙️ Voraussetzungen
 
-- PowerShell 7 oder höher
+- PowerShell 5 oder höher
 - Installiertes PowerShell-Modul: `Microsoft.Graph`
 - Ein Benutzerkonto mit ausreichenden Rechten zum Lesen von Intune-Richtlinien
 
