@@ -1,53 +1,46 @@
-# Beschreibung: Dieses Skript exportiert alle Gerätekonfigurationen aus Intune in eine Excel-Datei.
-# Module laden
 
-#Install-Module Microsoft.Graph -Scope CurrentUser -Force
-#Install-Module ImportExcel -Scope CurrentUser -Force    
-#Import-Module Microsoft.Graph
+# ============================
+# Modulinstallation & Import
+# ============================
+
+# Microsoft.Graph installieren (wenn nicht vorhanden)
+if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
+    Install-Module Microsoft.Graph -Scope CurrentUser -Force
+}
+Import-Module Microsoft.Graph
+
+# ImportExcel installieren (wenn nicht vorhanden)
+if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+    Install-Module ImportExcel -Scope CurrentUser -Force
+}
 Import-Module ImportExcel
-
 
 
 # Funktionen
 
-function windows10CustomConfigurationSettings {
-    param (
-        $policy # Policy-Objekt, das die OMA-Einstellungen enthält
-    )
+function Get-CustomConfigurationSettings {
+    param ($policy)
     $settings = @()
     foreach ($setting in $policy.omaSettings) {
         $settings += [PSCustomObject]@{
             PolicyName = $policy.displayName
-            version = $policy.version
-            description = $policy.description
-            lastModifiedDateTime = $policy.lastModifiedDateTime
-            createdDateTime = $policy.createdDateTime
+            Version = $policy.version
+            Description = $policy.description
+            LastModifiedDateTime = $policy.lastModifiedDateTime
+            CreatedDateTime = $policy.createdDateTime
             SettingName = $setting.displayName
             SettingDescription = $setting.description
-            SettingType = ($setting.'@odata.type').Split('.')[2] 
+            SettingType = ($setting.'@odata.type').Split('.')[-1]
             OMAUri = $setting.omaUri
-            value = $setting.value
+            Value = $setting.value
         }
     }
-    $settings
+    return $settings
 }
-function windows10GeneralConfigurationSettings {
-    param (
-        $policy
-    )
 
+function Get-GenericConfigurationSettings {
+    param ($policy)
     $settings = @()
-
-    # Metadaten
-    $meta = @{
-        PolicyName = $policy.displayName
-        Version = $policy.version
-        Description = $policy.description
-        LastModifiedDateTime = $policy.lastModifiedDateTime
-        CreatedDateTime = $policy.createdDateTime
-    }
-
-    # Properties, die nicht als Setting exportiert werden sollen
     $excludedProps = @(
         "displayName", "version", "description", "lastModifiedDateTime", "createdDateTime",
         "id", "@odata.context", "@odata.type", "@microsoft.graph.tips", "roleScopeTagIds",
@@ -63,11 +56,11 @@ function windows10GeneralConfigurationSettings {
             }
 
             $settings += [PSCustomObject]@{
-                PolicyName = $meta.PolicyName
-                Version = $meta.Version
-                Description = $meta.Description
-                LastModifiedDateTime = $meta.LastModifiedDateTime
-                CreatedDateTime = $meta.CreatedDateTime
+                PolicyName = $policy.displayName
+                Version = $policy.version
+                Description = $policy.description
+                LastModifiedDateTime = $policy.lastModifiedDateTime
+                CreatedDateTime = $policy.createdDateTime
                 SettingName = $property.Key
                 SettingValue = $value
             }
@@ -77,52 +70,40 @@ function windows10GeneralConfigurationSettings {
     return $settings
 }
 
-
-
-#Main-Skript
-
-# Mit Graph verbinden
+# Verbindung zu Microsoft Graph
 Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
 
-# Alle Gerätekonfigurationen abrufen
+# Gerätekonfigurationen abrufen
 $policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
 
-# Dictionary zur Gruppierung nach @odata.type
+# Gruppierung nach Typ
 $groupedPolicies = @{}
- 
 
-# Richtlinien durchgehen
 foreach ($policyID in $policies.value.id) {
-    $odataType = ""
     $policy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$policyID"
-    $odataType = ($policy.'@odata.type').Split('.')[2] # Extrahiere den ODataType
-    Write-Host "$($policy.displayName); $odataType; $($policy.id)"
-    Switch ($odataType) {
+    $odataType = ($policy.'@odata.type').Split('.')[-1]
+
+    Write-Host "Verarbeite: $($policy.displayName) [$odataType]"
+
+    if (-not $groupedPolicies.ContainsKey($odataType)) {
+        $groupedPolicies[$odataType] = @()
+    }
+
+    switch ($odataType) {
         "windows10CustomConfiguration" {
-            Write-Host "$($policy.displayName); $odataType; $($policy.id)"
-           
-            if (-not $groupedPolicies.ContainsKey($odataType)) {
-                $groupedPolicies[$odataType] = @()
-            }
-            $groupedPolicies[$odataType] += windows10CustomConfigurationSettings -policy $policy
-            }
-        "windows10GeneralConfiguration" {
-            Write-Host "$($policy.displayName); $odataType; $($policy.id)"  
-            if (-not $groupedPolicies.ContainsKey($odataType)) {
-                $groupedPolicies[$odataType] = @()
-            }
-            $groupedPolicies[$odataType] += windows10GeneralConfigurationSettings -policy $policy
+            $groupedPolicies[$odataType] += Get-CustomConfigurationSettings -policy $policy
         }
-    }  
+        default {
+            $groupedPolicies[$odataType] += Get-GenericConfigurationSettings -policy $policy
+        }
+    }
 }
 
-# Export nach Excel mit Tabs pro ODataType
+# Export nach Excel
 $excelPath = "$env:USERPROFILE\Desktop\Intune-Policies.xlsx"
 foreach ($key in $groupedPolicies.Keys) {
-    $sheetName = ($key -replace '[^a-zA-Z0-9]', '_') -replace '^_', ''
+    $sheetName = $key  # Optional: Sheet-Namen bereinigen, falls nötig
     $groupedPolicies[$key] | Export-Excel -Path $excelPath -WorksheetName $sheetName -AutoSize -Append
 }
 
 Write-Host "Export abgeschlossen: $excelPath"
-
-
