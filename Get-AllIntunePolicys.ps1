@@ -1,40 +1,40 @@
+
 <#
 .SYNOPSIS
-    Exportiert alle Intune-Richtlinien (Konfigurationsprofile, Compliance-Richtlinien, Applikationsrichtlinien etc.) aus Microsoft Endpoint Manager (Intune) in JSON-Dateien.
+    Exportiert alle Intune-Richtlinien (Konfigurationsprofile, Compliance-Richtlinien, Applikationsrichtlinien etc.) aus Microsoft Endpoint Manager (Intune) in JSON-Dateien und Excel.
 
 .BESCHREIBUNG
     Dieses Skript verbindet sich mit dem Microsoft Graph API über das Microsoft.Graph PowerShell-Modul und exportiert alle relevanten Intune-Richtlinien in strukturierter Form.
-    Die exportierten Daten werden in einem lokalen Verzeichnis gespeichert und können zur Dokumentation oder für Backup-Zwecke verwendet werden.
+    Zusätzlich werden die zugewiesenen Azure AD-Gruppen zu jeder Richtlinie ermittelt und in die Excel-Datei aufgenommen.
 
 .AUTOR
-    Thomas Hoins
+    Thomas Hoins (erweitert durch Copilot)
 
 .VORAUSSETZUNGEN
     - Microsoft.Graph PowerShell-Modul
+    - ImportExcel PowerShell-Modul
     - Berechtigungen zum Zugriff auf Microsoft Intune über Microsoft Graph
 .VERSION
-    1.0
-
+    1.1
 #>
 
 # ============================
 # Modulinstallation & Import
 # ============================
 
-# Microsoft.Graph installieren (wenn nicht vorhanden)
 if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
     Install-Module Microsoft.Graph -Scope CurrentUser -Force
 }
-Import-Module Microsoft.Graph
+#Import-Module Microsoft.Graph
 
-# ImportExcel installieren (wenn nicht vorhanden)
 if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
     Install-Module ImportExcel -Scope CurrentUser -Force
 }
 Import-Module ImportExcel
 
-
+# ============================
 # Funktionen
+# ============================
 
 function Get-CustomConfigurationSettings {
     param ($policy)
@@ -88,13 +88,40 @@ function Get-GenericConfigurationSettings {
     return $settings
 }
 
-# Verbindung zu Microsoft Graph
-Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
+function Get-AssignedGroups {
+    param (
+        [string]$PolicyId
+    )
 
-# Gerätekonfigurationen abrufen
+    $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$PolicyId/assignments"
+    $assignments = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET
+
+    $groupNames = @()
+
+    foreach ($assignment in $assignments.value) {
+        $targetGroupId = $assignment.target.groupId
+        if ($targetGroupId) {
+            $groupUri = "https://graph.microsoft.com/v1.0/groups/$targetGroupId"
+            try {
+                $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET
+                $groupNames += $group.displayName
+            } catch {
+                $groupNames += "Unbekannte Gruppe ($targetGroupId)"
+            }
+        }
+    }
+
+    return ($groupNames -join ", ")
+}
+
+# ============================
+# Verbindung & Datenabruf
+# ============================
+
+Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All", "Group.Read.All"
+
 $policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
 
-# Gruppierung nach Typ
 $groupedPolicies = @{}
 
 foreach ($policyID in $policies.value.id) {
@@ -103,24 +130,34 @@ foreach ($policyID in $policies.value.id) {
 
     Write-Host "Verarbeite: $($policy.displayName) [$odataType]"
 
+    $assignedGroups = Get-AssignedGroups -PolicyId $policy.id
+
     if (-not $groupedPolicies.ContainsKey($odataType)) {
         $groupedPolicies[$odataType] = @()
     }
 
     switch ($odataType) {
         "windows10CustomConfiguration" {
-            $groupedPolicies[$odataType] += Get-CustomConfigurationSettings -policy $policy
+            $settings = Get-CustomConfigurationSettings -policy $policy
         }
         default {
-            $groupedPolicies[$odataType] += Get-GenericConfigurationSettings -policy $policy
+            $settings = Get-GenericConfigurationSettings -policy $policy
         }
+    }
+
+    foreach ($setting in $settings) {
+        $setting | Add-Member -MemberType NoteProperty -Name "AssignedGroups" -Value $assignedGroups
+        $groupedPolicies[$odataType] += $setting
     }
 }
 
+# ============================
 # Export nach Excel
+# ============================
+
 $excelPath = "$env:USERPROFILE\Desktop\Intune-Policies.xlsx"
 foreach ($key in $groupedPolicies.Keys) {
-    $sheetName = $key  # Optional: Sheet-Namen bereinigen, falls nötig
+    $sheetName = $key
     $groupedPolicies[$key] | Export-Excel -Path $excelPath -WorksheetName $sheetName -AutoSize -Append
 }
 
