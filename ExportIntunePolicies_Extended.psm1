@@ -51,9 +51,9 @@ function Export-IntunePolicies {
     function Get-CustomConfigurationSettings {
         param ($policy)
         $settings = @()
-        Write-Host "Processing custom configuration policy: $($policy.displayName)"
+        Write-Host "Processing policy: $($policy.displayName)"
+        $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
         foreach ($setting in $policy.omaSettings) {
-            Write-Host "Processing setting: $($setting.displayName)"
             $settings += [PSCustomObject]@{
                 PolicyName = $policy.displayName
                 Version = $policy.version
@@ -65,7 +65,7 @@ function Export-IntunePolicies {
                 SettingType = ($setting.'@odata.type').Split('.')[-1]
                 OMAUri = $setting.omaUri
                 Value = $setting.value
-                AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
+                AssignedGroups = $AssignedGroups
             }
         }
         return $settings
@@ -80,9 +80,8 @@ function Export-IntunePolicies {
             "supportsScopeTags", "deviceManagementApplicabilityRuleOsEdition",
             "deviceManagementApplicabilityRuleOsVersion", "deviceManagementApplicabilityRuleDeviceMode"
         )
-        Write-Host "Processing generic policy: $($policy.displayName)"
+        Write-Host "Processing policy: $($policy.displayName)"
         foreach ($property in $policy.GetEnumerator()) {
-            Write-Debug "Processing property: $($property.Key)"
             if ($excludedProps -notcontains $property.Key -and $null -ne $property.Value) {
                 $value = $property.Value
                 if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
@@ -103,8 +102,28 @@ function Export-IntunePolicies {
         return $settings
     }
 
+    
+function Get-SettingsCatalogSettings {
+    param ($policy)
+    $settings = @()
+    $settingsUri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies/$($policy.id)/settings"
+    $response = Invoke-MgGraphRequest -Method GET -Uri $settingsUri
 
-    Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
+    foreach ($setting in $response.value) {
+        Write-Host "Processing policy: $($policy.name)"
+        $settings += [PSCustomObject]@{
+            PolicyName          = $policy.name
+            Description         = $policy.description
+            LastModifiedDateTime= $policy.lastModifiedDateTime
+            CreatedDateTime     = $policy.createdDateTime
+            SettingName         = $setting.settingInstance.displayName
+            Value               = $setting.settingInstance.valueJson
+        }
+    }
+    return $settings
+}
+
+Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
 
     $policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
     $groupedPolicies = @{}
@@ -126,7 +145,18 @@ function Export-IntunePolicies {
         $groupedPolicies[$odataType] += $settings
     }
 
-    foreach ($key in $groupedPolicies.Keys) {
+    
+# Retrieve Settings Catalog Policies
+$catalogPolicies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies"
+if (-not $groupedPolicies.ContainsKey("SettingsCatalog")) {
+    $groupedPolicies["SettingsCatalog"] = @()
+}
+foreach ($catalogPolicy in $catalogPolicies.value) {
+    $settings = Get-SettingsCatalogSettings -policy $catalogPolicy
+    $groupedPolicies["SettingsCatalog"] += $settings
+}
+
+foreach ($key in $groupedPolicies.Keys) {
         $data = $groupedPolicies[$key]
         switch ($OutputFormat) {
             "Console" {
