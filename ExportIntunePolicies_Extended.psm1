@@ -51,7 +51,7 @@ function Export-IntunePolicies {
     function Get-CustomConfigurationSettings {
         param ($policy)
         $settings = @()
-        Write-Host "Processing policy: $($policy.displayName)"
+        Write-Host "Processing Custom policy: $($policy.displayName)"
         $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
         foreach ($setting in $policy.omaSettings) {
             $settings += [PSCustomObject]@{
@@ -80,7 +80,7 @@ function Export-IntunePolicies {
             "supportsScopeTags", "deviceManagementApplicabilityRuleOsEdition",
             "deviceManagementApplicabilityRuleOsVersion", "deviceManagementApplicabilityRuleDeviceMode"
         )
-        Write-Host "Processing policy: $($policy.displayName)"
+        Write-Host "Processing Generic policy: $($policy.displayName)"
         foreach ($property in $policy.GetEnumerator()) {
             if ($excludedProps -notcontains $property.Key -and $null -ne $property.Value) {
                 $value = $property.Value
@@ -108,16 +108,37 @@ function Get-SettingsCatalogSettings {
     $settings = @()
     $settingsUri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies/$($policy.id)/settings"
     $response = Invoke-MgGraphRequest -Method GET -Uri $settingsUri
-
+    Write-Host "Processing Settings Catalog policy: $($policy.name)"
     foreach ($setting in $response.value) {
-        Write-Host "Processing policy: $($policy.name)"
+        $Children= ""
+        if ($setting.settingInstance.choiceSettingValue.children.choiceSettingValue) {
+            $Children=($setting.settingInstance.choiceSettingValue.children | ForEach-Object {
+                if ($_.choiceSettingValue.value) {
+                    "$($_.settingDefinitionId): $($_.choiceSettingValue.value.Split("_")[-1])"
+                } else {
+                    "$($_.settingDefinitionId): Not Set"
+                }
+                }
+            )
+            $Children = $Children -join "; "
+        }
+        elseif ($setting.settingInstance.choiceSettingValue.children.simpleSettingValue) {
+            $Children="$($setting.settingInstance.choiceSettingValue.children.simpleSettingValue.valueState): $($setting.settingInstance.choiceSettingValue.children.simpleSettingValue.value.Split)"
+        }
+        $Value = $setting.settingInstance.choiceSettingValue.value
+        if (![string]::IsNullOrEmpty($Value)) {
+            $Value = $Value.Split("_")[-1]
+        } else {
+            $Value = "Not Set"
+        }
         $settings += [PSCustomObject]@{
             PolicyName          = $policy.name
             Description         = $policy.description
             LastModifiedDateTime= $policy.lastModifiedDateTime
             CreatedDateTime     = $policy.createdDateTime
-            SettingName         = $setting.settingInstance.displayName
-            Value               = $setting.settingInstance.valueJson
+            SettingName         = $setting.settingInstance.settingDefinitionId
+            Value               = $Value
+            Children            = $Children
         }
     }
     return $settings
@@ -125,25 +146,22 @@ function Get-SettingsCatalogSettings {
 
 Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
 
-    $policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
-    $groupedPolicies = @{}
+$policies = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
+$groupedPolicies = @{}
 
-    foreach ($policyID in $policies.value.id) {
-        $policy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$policyID"
-        $odataType = ($policy.'@odata.type').Split('.')[-1]
-        if (-not $groupedPolicies.ContainsKey($odataType)) {
-            $groupedPolicies[$odataType] = @()
-        }
-        switch ($odataType) {
-            "windows10CustomConfiguration" {
-                $settings = Get-CustomConfigurationSettings -policy $policy
-            }
-            default {
-                $settings = Get-GenericConfigurationSettings -policy $policy
-            }
-        }
-        $groupedPolicies[$odataType] += $settings
+foreach ($policyID in $policies.value.id) {
+    $policy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$policyID"
+    $odataType = ($policy.'@odata.type').Split('.')[-1]
+    if (-not $groupedPolicies.ContainsKey($odataType)) {
+        $groupedPolicies[$odataType] = @()
     }
+    if ($odataType -eq "windows10CustomConfiguration") {
+        $settings = Get-CustomConfigurationSettings -policy $policy
+    } else {
+        $settings = Get-GenericConfigurationSettings -policy $policy
+    }
+    $groupedPolicies[$odataType] += $settings
+}
 
     
 # Retrieve Settings Catalog Policies
