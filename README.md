@@ -13,7 +13,7 @@ This PowerShell module allows you to export Microsoft Intune device configuratio
 
 - PowerShell 5.1 or later
 - [Microsoft.Graph.Authentication](https://www.powershellgallery.com/packages/Microsoft.Graph.Authentication)
-- [ImportExcel](https://www.powershellgallery.com/packages/ImportExcel) (only for Excel export)
+- [ImportExcel](https://www.powershellgallery.com/packages/ImportExcel) (required for Excel and HTML export)
 
 ## Installation
 
@@ -28,13 +28,13 @@ Import-Module .\ExportIntunePolicies.psm1
 ```powershell
 Export-IntunePolicies -OutputFormat CSV
 Export-IntunePolicies -OutputFormat Excel -OutputPath "C:\Exports\Intune"
-Export-IntunePolicies -OutputFormat HTML
-Export-IntunePolicies -OutputFormat Console
+Export-IntunePolicies -OutputFormat HTML -Platform windows
+Export-IntunePolicies -OutputFormat Console -Platform macOS
 ```
 
 - `-OutputFormat`: Choose between `CSV`, `Excel`, `HTML`, or `Console`. Default is `CSV`.
 - `-OutputPath`: (Optional) Specify the export directory. Default is `Desktop\Intune-Policies`.
-- `-Platform`: (Optional) Filter exports by platform, for example `windows10AndLater`, `ios`, or `macOS`.
+- `-Platform`: (Optional) Filter exports by platform. Supported values: `android`, `androidForWork`, `ios`, `macOS`, `windows`. Default is `windows`.
 
 ## Example
 
