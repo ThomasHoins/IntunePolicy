@@ -60,6 +60,26 @@ function Export-IntunePolicies {
         Import-Module ImportExcel
     }
 
+    # Create group cache to avoid repeated API calls
+    $groupCache = @{}
+
+    # Function to get group name with caching
+    function Get-GroupNameCached {
+        param ([string]$GroupId)
+        if ($groupCache.ContainsKey($GroupId)) {
+            return $groupCache[$GroupId]
+        }
+        try {
+            $groupUri = "https://graph.microsoft.com/v1.0/groups/$GroupId"
+            $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET
+            $groupCache[$GroupId] = $group.displayName
+            return $group.displayName
+        } catch {
+            $groupCache[$GroupId] = "Unknown Group ($GroupId)"
+            return "Unknown Group ($GroupId)"
+        }
+    }
+
     # Function to get assigned groups for a policy
     function Get-AssignedGroups {
         param ([string]$PolicyId)
@@ -70,13 +90,7 @@ function Export-IntunePolicies {
             Write-Debug "Getting group for assignment: $($assignment.id)"
             $targetGroupId = $assignment.target.groupId
             if ($targetGroupId) {
-                $groupUri = "https://graph.microsoft.com/v1.0/groups/$targetGroupId"
-                try {
-                    $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET
-                    $groupNames += $group.displayName
-                } catch {
-                    $groupNames += "Unknown Group ($targetGroupId)"
-                }
+                $groupNames += Get-GroupNameCached -GroupId $targetGroupId
             }
         }
         return ($groupNames -join ", ")
@@ -86,7 +100,6 @@ function Export-IntunePolicies {
     function Get-CustomConfigurationSettings {
         param ($policy)
         $settings = @()
-        Write-Host "Processing Custom policy: $($policy.displayName)"
         $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
         foreach ($setting in $policy.omaSettings) {
             $settings += [PSCustomObject]@{
@@ -116,7 +129,7 @@ function Export-IntunePolicies {
             "supportsScopeTags", "deviceManagementApplicabilityRuleOsEdition",
             "deviceManagementApplicabilityRuleOsVersion", "deviceManagementApplicabilityRuleDeviceMode"
         )
-        Write-Host "Processing Generic policy: $($policy.displayName)"
+        $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
         foreach ($property in $policy.GetEnumerator()) {
             if ($excludedProps -notcontains $property.Key -and $null -ne $property.Value) {
                 $value = $property.Value
@@ -131,7 +144,7 @@ function Export-IntunePolicies {
                     CreatedDateTime = $policy.createdDateTime
                     SettingName = $property.Key
                     SettingValue = $value
-                    AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
+                    AssignedGroups = $AssignedGroups
                 }
             }
         }
@@ -144,9 +157,7 @@ function Export-IntunePolicies {
         $settings = @()
         $settingsUri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies/$($policy.id)/settings"
         $response = Get-GraphCollection -Uri $settingsUri
-        Write-Host "Processing Settings Catalog policy: $($policy.name)"
         if (-not $response -or $response.Count -eq 0) {
-            Write-Host "No settings found for policy: $($policy.name)"
             return $settings
         }
 
@@ -156,25 +167,26 @@ function Export-IntunePolicies {
             }
 
             $Children = ""
-            if ($setting.settingInstance.choiceSettingValue -and $setting.settingInstance.choiceSettingValue.children -and $setting.settingInstance.choiceSettingValue.children.choiceSettingValue) {
-                $Children = $setting.settingInstance.choiceSettingValue.children | ForEach-Object {
-                    if ($_.choiceSettingValue.value) {
-                        "$($_.settingDefinitionId): $($_.choiceSettingValue.value.Split("_")[-1])"
+            $choiceValue = $setting.settingInstance.choiceSettingValue
+            
+            if ($choiceValue -and $choiceValue.children) {
+                $childrenArray = @()
+                foreach ($child in $choiceValue.children) {
+                    if ($child.choiceSettingValue.value) {
+                        $childrenArray += "$($child.settingDefinitionId): $($child.choiceSettingValue.value.Split("_")[-1])"
+                    } elseif ($child.simpleSettingValue) {
+                        $childrenArray += "$($child.settingDefinitionId): $($child.simpleSettingValue.value)"
                     } else {
-                        "$($_.settingDefinitionId): Not Set"
+                        $childrenArray += "$($child.settingDefinitionId): Not Set"
                     }
                 }
-                $Children = $Children -join "; "
-            }
-            elseif ($setting.settingInstance.choiceSettingValue -and $setting.settingInstance.choiceSettingValue.children -and $setting.settingInstance.choiceSettingValue.children.simpleSettingValue) {
-                $Children = "$($setting.settingInstance.choiceSettingValue.children.simpleSettingValue.valueState): $($setting.settingInstance.choiceSettingValue.children.simpleSettingValue.value.Split())"
+                $Children = $childrenArray -join "; "
             }
 
-            $Value = if ($setting.settingInstance.choiceSettingValue) { $setting.settingInstance.choiceSettingValue.value } else { $null }
-            if (![string]::IsNullOrEmpty($Value)) {
-                $Value = $Value.Split("_")[-1]
-            } else {
-                $Value = "Not Set"
+            $Value = if ($choiceValue.value) { 
+                $choiceValue.value.Split("_")[-1] 
+            } else { 
+                "Not Set" 
             }
 
             $settings += [PSCustomObject]@{
@@ -264,11 +276,43 @@ function Export-IntunePolicies {
     }   
 
     # Retrieve Device Configuration Policies
+    Write-Host "Retrieving device configuration policies..."
     $policies = Get-GraphCollection -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations"
+    Write-Host "Found $($policies.Count) device configuration policies. Processing..."
     $groupedPolicies = @{}
 
-    foreach ($policyID in $policies.id) {
-        $policy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$policyID"
+    # Pre-fetch all unique group IDs from assignments for caching
+    Write-Host "Pre-fetching group information..."
+    $uniqueGroupIds = @()
+    foreach ($policy in $policies) {
+        try {
+            $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$($policy.id)/assignments"
+            $assignments = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET
+            foreach ($assignment in $assignments.value) {
+                if ($assignment.target.groupId) {
+                    $uniqueGroupIds += $assignment.target.groupId
+                }
+            }
+        } catch {
+            # Continue on error
+        }
+    }
+    
+    # Remove duplicates and fetch all groups at once
+    $uniqueGroupIds = $uniqueGroupIds | Sort-Object -Unique
+    foreach ($groupId in $uniqueGroupIds) {
+        try {
+            $groupUri = "https://graph.microsoft.com/v1.0/groups/$groupId"
+            $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET
+            $groupCache[$groupId] = $group.displayName
+        } catch {
+            $groupCache[$groupId] = "Unknown Group ($groupId)"
+        }
+    }
+    Write-Host "Cached $($groupCache.Count) groups. Processing policies..."
+
+    # Process policies - sequential to avoid Graph throttling
+    foreach ($policy in $policies) {
         if (-not (Matches-PlatformFilter -policy $policy -PlatformFilter $Platform)) {
             continue
         }
@@ -285,12 +329,15 @@ function Export-IntunePolicies {
         $groupedPolicies[$odataType] += $settings
     }
 
-    
     # Retrieve Settings Catalog Policies
+    Write-Host "Retrieving Settings Catalog policies..."
     $catalogPolicies = Get-GraphCollection -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies"
+    Write-Host "Found $($catalogPolicies.Count) Settings Catalog policies. Processing..."
+    
     if (-not $groupedPolicies.ContainsKey("SettingsCatalog")) {
         $groupedPolicies["SettingsCatalog"] = @()
     }
+    
     foreach ($catalogPolicy in $catalogPolicies) {
         if (-not (Matches-PlatformFilter -policy $catalogPolicy -PlatformFilter $Platform)) {
             continue
