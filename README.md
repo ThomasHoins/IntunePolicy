@@ -34,6 +34,7 @@ Export-IntunePolicies -OutputFormat Console
 
 - `-OutputFormat`: Choose between `CSV`, `Excel`, `HTML`, or `Console`. Default is `CSV`.
 - `-OutputPath`: (Optional) Specify the export directory. Default is `Desktop\Intune-Policies`.
+- `-Platform`: (Optional) Filter exports by platform, for example `windows10AndLater`, `ios`, or `macOS`.
 
 ## Example
 

@@ -12,6 +12,9 @@
 .PARAMETER OutputPath
     Target directory for the export files. Default: Desktop\Intune-Policies.
 
+.PARAMETER Platform
+    Optional filter for platform-specific policies. Accepts one or more of: android, androidForWork, ios, macOS, windows10AndLater, windows81AndLater, windowsPhone81AndLater.
+
 .EXAMPLE
     Export-IntunePolicies -OutputFormat CSV
 
@@ -30,7 +33,10 @@ function Export-IntunePolicies {
         [ValidateSet("Console", "CSV", "Excel", "HTML")]
         [string]$OutputFormat = "CSV",
 
-        [string]$OutputPath = "$env:USERPROFILE\Desktop\Intune-Policies"
+        [string]$OutputPath = "$env:USERPROFILE\Desktop\Intune-Policies",
+
+        [ValidateSet("android", "androidForWork", "ios", "macOS", "windows10AndLater", "windows81AndLater", "windowsPhone81AndLater")]
+        [string[]]$Platform = @()
     )
 
     # Ensure output directory exists
@@ -172,6 +178,44 @@ function Export-IntunePolicies {
         }
         return $settings
     }
+
+    function Matches-PlatformFilter {
+        param (
+            $policy,
+            [string[]]$PlatformFilter
+        )
+        if (-not $PlatformFilter -or $PlatformFilter.Count -eq 0) {
+            return $true
+        }
+
+        $normalizedFilter = $PlatformFilter | ForEach-Object {
+            if ($_ -ne $null) { $_.ToString().Trim().ToLowerInvariant() }
+        } | Where-Object { $_ }
+
+        $potentialValues = @()
+        foreach ($prop in 'platform', 'platformType', 'platforms') {
+            if ($policy.PSObject.Properties.Match($prop)) {
+                $potentialValues += $policy.$prop
+            }
+        }
+
+        $actualValues = $potentialValues | ForEach-Object {
+            if ($_ -is [System.Collections.IEnumerable] -and -not ($_ -is [string])) {
+                $_ | ForEach-Object { $_.ToString().ToLowerInvariant() }
+            } elseif ($_ -ne $null) {
+                $_.ToString().ToLowerInvariant()
+            }
+        } | Where-Object { $_ }
+
+        foreach ($value in $actualValues) {
+            if ($normalizedFilter -contains $value) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
     If (-not (Get-MgContext)) {
         Write-Host "Connecting to Microsoft Graph..."
         Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
@@ -183,6 +227,10 @@ function Export-IntunePolicies {
 
     foreach ($policyID in $policies.value.id) {
         $policy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$policyID"
+        if (-not (Matches-PlatformFilter -policy $policy -PlatformFilter $Platform)) {
+            continue
+        }
+
         $odataType = ($policy.'@odata.type').Split('.')[-1]
         if (-not $groupedPolicies.ContainsKey($odataType)) {
             $groupedPolicies[$odataType] = @()
@@ -202,6 +250,10 @@ function Export-IntunePolicies {
         $groupedPolicies["SettingsCatalog"] = @()
     }
     foreach ($catalogPolicy in $catalogPolicies.value) {
+        if (-not (Matches-PlatformFilter -policy $catalogPolicy -PlatformFilter $Platform)) {
+            continue
+        }
+
         $settings = Get-SettingsCatalogSettings -policy $catalogPolicy
         $groupedPolicies["SettingsCatalog"] += $settings
     }
