@@ -71,9 +71,13 @@ function Export-IntunePolicies {
         }
         try {
             $groupUri = "https://graph.microsoft.com/v1.0/groups/$GroupId"
-            $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET
-            $groupCache[$GroupId] = $group.displayName
-            return $group.displayName
+            $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET -ErrorAction Stop
+            if ($group -and $group.displayName) {
+                $groupCache[$GroupId] = $group.displayName
+                return $group.displayName
+            }
+            $groupCache[$GroupId] = "Unknown Group ($GroupId)"
+            return "Unknown Group ($GroupId)"
         } catch {
             $groupCache[$GroupId] = "Unknown Group ($GroupId)"
             return "Unknown Group ($GroupId)"
@@ -82,15 +86,32 @@ function Export-IntunePolicies {
 
     # Function to get assigned groups for a policy
     function Get-AssignedGroups {
-        param ([string]$PolicyId)
-        $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$PolicyId/assignments"
-        $assignments = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET
+        param (
+            [string]$PolicyId,
+            [string]$PolicyType = "deviceConfigurations"
+        )
+
+        if ($PolicyType -and $PolicyType -like '*configurationPolicy*') {
+            $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies/$PolicyId/assignments"
+        } else {
+            $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$PolicyId/assignments"
+        }
+
+        try {
+            $assignments = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET -ErrorAction Stop
+        } catch {
+            Write-Verbose "Unable to retrieve assignments for $PolicyType policy $($PolicyId): $($_.Exception.Message)"
+            return ""
+        }
+
         $groupNames = @()
-        foreach ($assignment in $assignments.value) {
-            Write-Debug "Getting group for assignment: $($assignment.id)"
-            $targetGroupId = $assignment.target.groupId
-            if ($targetGroupId) {
-                $groupNames += Get-GroupNameCached -GroupId $targetGroupId
+        if ($assignments -and $assignments.value) {
+            foreach ($assignment in $assignments.value) {
+                Write-Debug "Getting group for assignment: $($assignment.id)"
+                $targetGroupId = $assignment.target.groupId
+                if ($targetGroupId) {
+                    $groupNames += Get-GroupNameCached -GroupId $targetGroupId
+                }
             }
         }
         return ($groupNames -join ", ")
@@ -100,7 +121,7 @@ function Export-IntunePolicies {
     function Get-CustomConfigurationSettings {
         param ($policy)
         $settings = @()
-        $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
+        $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id -PolicyType $policy.'@odata.type'
         foreach ($setting in $policy.omaSettings) {
             $settings += [PSCustomObject]@{
                 PolicyName = $policy.displayName
@@ -129,7 +150,7 @@ function Export-IntunePolicies {
             "supportsScopeTags", "deviceManagementApplicabilityRuleOsEdition",
             "deviceManagementApplicabilityRuleOsVersion", "deviceManagementApplicabilityRuleDeviceMode"
         )
-        $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id
+        $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id -PolicyType $policy.'@odata.type'
         foreach ($property in $policy.GetEnumerator()) {
             if ($excludedProps -notcontains $property.Key -and $null -ne $property.Value) {
                 $value = $property.Value
@@ -161,6 +182,7 @@ function Export-IntunePolicies {
             return $settings
         }
 
+        $AssignedGroups = Get-AssignedGroups -PolicyId $policy.id -PolicyType $policy.'@odata.type'
         foreach ($setting in $response) {
             if (-not $setting.settingInstance) {
                 continue
@@ -194,6 +216,7 @@ function Export-IntunePolicies {
                 Description         = $policy.description
                 LastModifiedDateTime= $policy.lastModifiedDateTime
                 CreatedDateTime     = $policy.createdDateTime
+                AssignedGroups      = $AssignedGroups
                 SettingName         = $setting.settingInstance.settingDefinitionId
                 Value               = $Value
                 Children            = $Children
@@ -202,17 +225,154 @@ function Export-IntunePolicies {
         return $settings
     }
 
+    function Save-HtmlReport {
+        param (
+            [hashtable]$GroupedPolicies,
+            [string]$OutputPath
+        )
+
+        $reportFile = Join-Path $OutputPath "Intune-Policies.html"
+        $tabs = @()
+        $sections = @()
+
+        foreach ($groupName in $GroupedPolicies.Keys) {
+            $tabId = [regex]::Replace($groupName, '[^a-zA-Z0-9]', '_')
+            $tabs += [PSCustomObject]@{ GroupName = $groupName; TabId = $tabId }
+
+            $sectionHtml = "<div id='$tabId' class='tab-content'>"
+            $sectionHtml += "<h1>$groupName</h1>"
+
+            if (-not $GroupedPolicies[$groupName] -or $GroupedPolicies[$groupName].Count -eq 0) {
+                $sectionHtml += "<p>Keine Richtlinien in dieser Kategorie gefunden.</p>"
+            } else {
+                $policyGroups = $GroupedPolicies[$groupName] | Group-Object -Property PolicyId, PolicyName, Description, Version, LastModifiedDateTime, CreatedDateTime, AssignedGroups
+                foreach ($policyGroup in $policyGroups) {
+                    $policy = $policyGroup.Group[0]
+                    $sectionHtml += "<div class='policy-block'>"
+                    $sectionHtml += "<div class='policy-header'><h2>$($policy.PolicyName)</h2>"
+                    if ($policy.Description) {
+                        $sectionHtml += "<p class='policy-meta'>$([System.Net.WebUtility]::HtmlEncode($policy.Description))</p>"
+                    }
+                    $sectionHtml += "<p class='policy-meta'><strong>Version:</strong> $($policy.Version) | <strong>Erstellt:</strong> $($policy.CreatedDateTime) | <strong>Geändert:</strong> $($policy.LastModifiedDateTime)</p>"
+                    if ($policy.AssignedGroups) {
+                        $sectionHtml += "<p class='policy-meta'><strong>Zugewiesene Gruppen:</strong> $([System.Net.WebUtility]::HtmlEncode($policy.AssignedGroups))</p>"
+                    }
+                    $sectionHtml += "</div>"
+
+                    $settingProperties = $policyGroup.Group[0].PSObject.Properties | Where-Object {
+                        $_.Name -notin @('PolicyId', 'PolicyName', 'Description', 'Version', 'LastModifiedDateTime', 'CreatedDateTime', 'AssignedGroups')
+                    } | Select-Object -ExpandProperty Name
+
+                    if ($policyGroup.Group.Count -gt 0 -and $settingProperties.Count -gt 0) {
+                        $sectionHtml += "<table class='setting-table'><thead><tr>"
+                        foreach ($propName in $settingProperties) {
+                            $sectionHtml += "<th>$propName</th>"
+                        }
+                        $sectionHtml += "</tr></thead><tbody>"
+
+                        foreach ($setting in $policyGroup.Group) {
+                            $sectionHtml += "<tr>"
+                            foreach ($propName in $settingProperties) {
+                                $value = $setting.$propName
+                                if ($null -eq $value) { $value = "" }
+                                $value = [System.Web.HttpUtility]::HtmlEncode($value.ToString())
+                                $sectionHtml += "<td>$value</td>"
+                            }
+                            $sectionHtml += "</tr>"
+                        }
+                        $sectionHtml += "</tbody></table>"
+                    } else {
+                        $sectionHtml += "<p>Keine Einstellungen für diese Richtlinie gefunden.</p>"
+                    }
+
+                    $sectionHtml += "</div>"
+                }
+            }
+
+            $sectionHtml += "</div>"
+            $sections += $sectionHtml
+        }
+
+        $headerHtml = @"
+<!DOCTYPE html>
+<html lang='de'>
+<head>
+    <meta charset='utf-8'>
+    <title>Intune Richtlinien Export</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background: #f6f7f8; color: #222; }
+        .tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid #ccc; margin-bottom: 18px; }
+        .tab { padding: 12px 18px; cursor: pointer; border: 1px solid #ccc; border-bottom: none; background: #e9ecef; margin-right: 6px; border-top-left-radius: 8px; border-top-right-radius: 8px; }
+        .tab.active { background: #fff; font-weight: 700; }
+        .tab-content { display: none; padding: 20px; border: 1px solid #ccc; border-radius: 0 8px 8px 8px; background: #fff; }
+        .tab-content.active { display: block; }
+        .policy-block { border: 1px solid #d6d8db; border-radius: 8px; padding: 18px; margin-bottom: 20px; background: #fbfcfd; }
+        .policy-header h2 { margin: 0 0 8px; }
+        .policy-meta { margin: 4px 0; color: #4d4d4d; }
+        .setting-table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+        .setting-table th, .setting-table td { border: 1px solid #dfe2e6; padding: 10px; text-align: left; vertical-align: top; }
+        .setting-table th { background: #f2f4f7; }
+        .setting-table tbody tr:nth-child(odd) { background: #fcfcfc; }
+        .separator { border-top: 1px solid #d1d5db; margin: 22px 0; }
+    </style>
+</head>
+<body>
+    <div class='tabs'>
+"@
+        foreach ($tab in $tabs) {
+            $headerHtml += "        <div class='tab' data-target='$($tab.TabId)'>$($tab.GroupName)</div>`r`n"
+        }
+        $headerHtml += @"
+    </div>
+"@
+        $headerHtml += $sections -join "`r`n"
+        $headerHtml += @"
+    <script>
+        const tabs = document.querySelectorAll('.tab');
+        const contents = document.querySelectorAll('.tab-content');
+        function activateTab(targetId) {
+            tabs.forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.target === targetId);
+            });
+            contents.forEach(content => {
+                content.classList.toggle('active', content.id === targetId);
+            });
+        }
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => activateTab(tab.dataset.target));
+        });
+        if (tabs.length > 0) {
+            activateTab(tabs[0].dataset.target);
+        }
+    </script>
+</body>
+</html>
+"@
+        Set-Content -Path $reportFile -Value $headerHtml -Encoding UTF8
+    }
+
     function Get-GraphCollection {
         param (
             [string]$Uri
         )
         $items = @()
-        $response = Invoke-MgGraphRequest -Method GET -Uri $Uri
+        try {
+            $response = Invoke-MgGraphRequest -Method GET -Uri $Uri -ErrorAction Stop
+        } catch {
+            Write-Verbose "Unable to retrieve Graph collection from ${$Uri}: $($_.Exception.Message)"
+            return $items
+        }
+
         if ($response.value) {
             $items += $response.value
         }
         while ($response.'@odata.nextLink') {
-            $response = Invoke-MgGraphRequest -Method GET -Uri $response.'@odata.nextLink'
+            try {
+                $response = Invoke-MgGraphRequest -Method GET -Uri $response.'@odata.nextLink' -ErrorAction Stop
+            } catch {
+                Write-Verbose "Unable to retrieve next page from $($response.'@odata.nextLink'): $($_.Exception.Message)"
+                break
+            }
             if ($response.value) {
                 $items += $response.value
             }
@@ -287,14 +447,16 @@ function Export-IntunePolicies {
     foreach ($policy in $policies) {
         try {
             $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$($policy.id)/assignments"
-            $assignments = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET
-            foreach ($assignment in $assignments.value) {
-                if ($assignment.target.groupId) {
-                    $uniqueGroupIds += $assignment.target.groupId
+            $assignments = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET -ErrorAction Stop
+            if ($assignments -and $assignments.value) {
+                foreach ($assignment in $assignments.value) {
+                    if ($assignment.target.groupId) {
+                        $uniqueGroupIds += $assignment.target.groupId
+                    }
                 }
             }
         } catch {
-            # Continue on error
+            Write-Verbose "Skipping assignments for policy ${$policy.id}: $($_.Exception.Message)"
         }
     }
     
@@ -303,8 +465,12 @@ function Export-IntunePolicies {
     foreach ($groupId in $uniqueGroupIds) {
         try {
             $groupUri = "https://graph.microsoft.com/v1.0/groups/$groupId"
-            $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET
-            $groupCache[$groupId] = $group.displayName
+            $group = Invoke-MgGraphRequest -Uri $groupUri -Method GET -ErrorAction Stop
+            if ($group -and $group.displayName) {
+                $groupCache[$groupId] = $group.displayName
+            } else {
+                $groupCache[$groupId] = "Unknown Group ($groupId)"
+            }
         } catch {
             $groupCache[$groupId] = "Unknown Group ($groupId)"
         }
@@ -360,10 +526,14 @@ function Export-IntunePolicies {
                     $data | Export-Excel -Path (Join-Path $OutputPath "Intune-Policies.xlsx") -WorksheetName $key -AutoSize -Append
                 }
                 "HTML" {
-                    $data | ConvertTo-Html | Out-File (Join-Path $OutputPath "$key.html")
+                    # HTML export is handled once for all grouped policy categories
                 }
             }
         }
+
+    if ($OutputFormat -eq "HTML") {
+        Save-HtmlReport -GroupedPolicies $groupedPolicies -OutputPath $OutputPath
+    }
 
     Write-Host "Export complete: $OutputPath"
 }

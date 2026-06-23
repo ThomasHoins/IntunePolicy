@@ -1,6 +1,6 @@
 @{
     RootModule = 'ExportIntunePolicies.psm1'
-    ModuleVersion = '1.2.0'
+    ModuleVersion = '1.2.1'
     GUID = 'd2f5c3e3-1f4e-4b5e-9c3e-123456789abc'
     Author = 'Thomas Hoins'
     CompanyName = 'Community'
